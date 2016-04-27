@@ -150,7 +150,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Daze Engine.h" />
+    <ClInclude Include="Graphics\CommandBuffer.h" />
+    <ClInclude Include="Graphics\CommandPool.h" />
     <ClInclude Include="Graphics\GPUQueue.h" />
+    <ClInclude Include="Graphics\GPUSemaphore.h" />
     <ClInclude Include="Graphics\GraphicsContext.h" />
     <ClInclude Include="ObjectManager.h" />
     <ClInclude Include="Resource.h" />
@@ -159,7 +162,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Daze Engine.cpp" />
+    <ClCompile Include="Graphics\CommandBuffer.cpp" />
+    <ClCompile Include="Graphics\CommandPool.cpp" />
     <ClCompile Include="Graphics\GPUQueue.cpp" />
+    <ClCompile Include="Graphics\GPUSemaphore.cpp" />
     <ClCompile Include="Graphics\GraphicsContext.cpp" />
     <ClCompile Include="ObjectManager.cpp" />
     <ClCompile Include="stdafx.cpp">
@@ -175,6 +181,9 @@
   <ItemGroup>
     <Image Include="Daze Engine.ico" />
     <Image Include="small.ico" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="ClassDiagram.cd" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

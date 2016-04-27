@@ -1,9 +1,11 @@
 #include "stdafx.h"
 #include <vector>
 #include <cstdlib>
-#include "GraphicsContext.h"
 
-using namespace Daze;
+#include "GraphicsContext.h"
+#include "GPUSemaphore.h"
+
+using namespace Daze::Graphics;
 
 GraphicsContext::GraphicsContext(const char *appName,
 	uint32_t appVersion)
@@ -19,19 +21,40 @@ GraphicsContext::GraphicsContext(const char *appName,
 	appInfo.pEngineName = DAZE_ENGINE_NAME;
 	appInfo.engineVersion = DAZE_ENGINE_VER_COMB;
 
+	swapChain = VK_NULL_HANDLE;
+	surface = VK_NULL_HANDLE;
+	device = VK_NULL_HANDLE;
+	activePhysicalDevice = VK_NULL_HANDLE;
+	instance = VK_NULL_HANDLE;
+
 	initialized = false;
 }
 
 void GraphicsContext::InitializeGraphics(void *pA,
 	void *pB)
 {
+	int enabledLayerCount = 0;
+	const char* enabledLayerNames[] = {
+		"VK_LAYER_GOOGLE_threading",
+		"VK_LAYER_GOOGLE_unique_objects",
+		"VK_LAYER_LUNARG_api_dump",
+		"VK_LAYER_LUNARG_device_limits",
+		"VK_LAYER_LUNARG_draw_state",
+		"VK_LAYER_LUNARG_image",
+		"VK_LAYER_LUNARG_mem_tracker",
+		"VK_LAYER_LUNARG_object_tracker",
+		"VK_LAYER_LUNARG_param_checker",
+		"VK_LAYER_LUNARG_screenshot",
+		"VK_LAYER_LUNARG_swapchain",
+		//     "VK_LAYER_LUNARG_vktrace",
+	};
+
+
 	VkResult err;
 
 	std::vector<const char*> extns;
 	std::vector<const char*> layers;
 	std::vector<VkDeviceQueueCreateInfo> queues;
-	VkFormat color_fmt;
-	VkColorSpaceKHR color_space;
 
 	float double_priority[] = { 1.0f, 0.0f };
 	float single_priority[] = { 1.0f };
@@ -52,6 +75,13 @@ void GraphicsContext::InitializeGraphics(void *pA,
 			for (int i = 0; i < layer_cnt; i++)
 			{
 				//Check for any layers we recognize and add them to the list above
+				for (int j = 0; j < enabledLayerCount; j++)
+				{
+					if (!strcmp(enabledLayerNames[j], layer_props[i].layerName))
+					{
+						layers.push_back(enabledLayerNames[j]);
+					}
+				}
 			}
 
 			delete[] layer_props;
@@ -70,6 +100,7 @@ void GraphicsContext::InitializeGraphics(void *pA,
 			VkExtensionProperties *extn_props = new VkExtensionProperties[extn_cnt];
 			bool surface_ext_found = false;
 			bool platform_surface_ext_found = false;
+			bool swapchain_ext_found = false;
 
 			err = vkEnumerateInstanceExtensionProperties(NULL, &extn_cnt, extn_props);
 			HandleError(err);
@@ -81,6 +112,13 @@ void GraphicsContext::InitializeGraphics(void *pA,
 				{
 					surface_ext_found = true;
 					extns.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+				}
+
+				//Search for the swapchain extension
+				if (!strcmp(extn_props[i].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+				{
+					swapchain_ext_found = true;
+					extns.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 				}
 
 #if defined(_WIN32)
@@ -100,7 +138,7 @@ void GraphicsContext::InitializeGraphics(void *pA,
 
 			delete[] extn_props;
 
-			if (!surface_ext_found | !platform_surface_ext_found)
+			if (!surface_ext_found | !platform_surface_ext_found | !swapchain_ext_found)
 			{
 				fprintf(stderr, "Required surface extension for this platform not found! \nMake sure Vulkan is supported.");
 			}
@@ -221,7 +259,7 @@ void GraphicsContext::InitializeGraphics(void *pA,
 		}
 		else {
 			fprintf(stderr, "No supported devices detected.\n");
-			exit(-1);
+			abort();
 		}
 	}
 
@@ -237,10 +275,10 @@ void GraphicsContext::InitializeGraphics(void *pA,
 	device_info.pNext = NULL;
 	device_info.flags = 0;
 
-	device_info.enabledLayerCount = inst_create_info.enabledLayerCount;
-	device_info.ppEnabledLayerNames = inst_create_info.ppEnabledLayerNames;
-	device_info.enabledExtensionCount = inst_create_info.enabledExtensionCount;
-	device_info.ppEnabledExtensionNames = inst_create_info.ppEnabledExtensionNames;
+	device_info.enabledLayerCount = 0;
+	device_info.ppEnabledLayerNames = NULL;
+	device_info.enabledExtensionCount = 0;
+	device_info.ppEnabledExtensionNames = NULL;
 
 	device_info.pEnabledFeatures = &device_features;
 	device_info.pQueueCreateInfos = queues.data();
@@ -251,7 +289,8 @@ void GraphicsContext::InitializeGraphics(void *pA,
 	HandleError(err);
 	initialized = true;	//The device has been created
 
-	//Now to determine which surface format to proceed with
+
+						//Now to determine which surface format to proceed with
 #if defined(_WIN32)
 	VkWin32SurfaceCreateInfoKHR surface_create_info;
 	surface_create_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
@@ -261,35 +300,21 @@ void GraphicsContext::InitializeGraphics(void *pA,
 
 	err = vkCreateWin32SurfaceKHR(instance, &surface_create_info, NULL, &surface);
 #else
-	//TODO add code for creating a linux or android surface
+						//TODO add code for creating a linux or android surface
 #endif
 	HandleError(err);
 
-	//Select a surface format and space
-	{
-		uint32_t fmt_cnt = 0;
-		vkGetPhysicalDeviceSurfaceFormatsKHR(activePhysicalDevice, surface, &fmt_cnt, NULL);
-		VkSurfaceFormatKHR *fmt_info = new VkSurfaceFormatKHR[fmt_cnt];
+	present_img_ready_semaphore = new GPUSemaphore(this);
+	rendering_done_semaphore = new GPUSemaphore(this);
+	presentQueue = new GPUQueue(presentQueueIndex, 0, this);
 
-		if (fmt_cnt == 1 && fmt_info[0].format == VK_FORMAT_UNDEFINED)
-		{
-			color_fmt = VK_FORMAT_B8G8R8A8_SRGB;
-		}
-		else {
-			if (fmt_cnt < 1) {
-				fprintf(stderr, "Unable to retrieve surface format info.");
-				exit(-1);
-			}
-
-			color_fmt = fmt_info[0].format;
-		}
-		color_space = fmt_info[0].colorSpace;
-
-		delete[] fmt_info;
+	if (present_img_ready_semaphore == NULL | rendering_done_semaphore == NULL | presentQueue == NULL) {
+		fprintf(stderr, "Memory allocation error!\n");
+		abort();
 	}
 
 
-
+	InitializeSwapChain(960, 540);
 }
 
 // Handle general Vulkan errors
@@ -302,7 +327,7 @@ void GraphicsContext::HandleError(VkResult err)
 	case VK_ERROR_DEVICE_LOST:
 		fprintf(stderr, "An unrecoverable error has occured. Exiting...\n");
 		//TODO: Free all resources
-		exit(-1);
+		abort();
 		break;
 	default:
 		fprintf(stderr, "Unknown Error code: %d\n", err);
@@ -313,6 +338,17 @@ void GraphicsContext::Free(void)
 {
 	if (initialized)
 	{
+		if (surface != VK_NULL_HANDLE)
+		{
+			vkDestroySurfaceKHR(instance, surface, NULL);
+			surface = VK_NULL_HANDLE;
+		}
+
+		if (swapChain != VK_NULL_HANDLE)
+		{
+			vkDestroySwapchainKHR(device, swapChain, NULL);
+			swapChain = VK_NULL_HANDLE;
+		}
 
 		vkDestroyInstance(instance, NULL);
 		initialized = false;
@@ -323,4 +359,194 @@ GraphicsContext::~GraphicsContext()
 {
 	//Ensure all pointers have been freed
 	Free();
+}
+
+void GraphicsContext::ResizeDisplay(uint32_t width, uint32_t height)
+{
+	InitializeSwapChain(width, height);
+}
+
+void GraphicsContext::InitializeSwapChain(uint32_t width, uint32_t height)
+{
+	VkResult err;
+	VkFormat color_fmt;
+	VkColorSpaceKHR color_space;
+	//Select a surface format and space
+	{
+		uint32_t fmt_cnt = 0;
+		err = vkGetPhysicalDeviceSurfaceFormatsKHR(activePhysicalDevice, surface, &fmt_cnt, NULL);
+		HandleError(err);
+
+		VkSurfaceFormatKHR *fmt_info = new VkSurfaceFormatKHR[fmt_cnt];
+		err = vkGetPhysicalDeviceSurfaceFormatsKHR(activePhysicalDevice, surface, &fmt_cnt, fmt_info);
+		HandleError(err);
+
+		if (fmt_cnt == 1 && fmt_info[0].format == VK_FORMAT_UNDEFINED)
+		{
+			color_fmt = VK_FORMAT_B8G8R8A8_SRGB;
+		}
+		else {
+			if (fmt_cnt < 1) {
+				fprintf(stderr, "Unable to retrieve surface format info.");
+				abort();
+			}
+
+			color_fmt = fmt_info[0].format;
+		}
+		color_space = fmt_info[0].colorSpace;
+
+		delete[] fmt_info;
+	}
+
+	{
+		uint32_t present_mode_cnt = 0;
+		err = vkGetPhysicalDeviceSurfacePresentModesKHR(activePhysicalDevice, surface, &present_mode_cnt, NULL);
+		HandleError(err);
+
+		present_mode = VK_PRESENT_MODE_FIFO_KHR;
+
+		if (present_mode_cnt > 0) {
+			VkPresentModeKHR *present_modes = new VkPresentModeKHR[present_mode_cnt];
+
+			vkGetPhysicalDeviceSurfacePresentModesKHR(activePhysicalDevice, surface, &present_mode_cnt, present_modes);
+			HandleError(err);
+
+			for (int i = 0; i < present_mode_cnt; i++)
+			{
+				if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+				{
+					present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+				}
+			}
+
+			delete[] present_modes;
+		}
+	}
+
+	//Start building the swap chain
+	VkSurfaceCapabilitiesKHR surface_cap;
+	err = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(activePhysicalDevice, surface, &surface_cap);
+	HandleError(err);
+
+	VkExtent2D swapchain_extent;
+	if (surface_cap.currentExtent.width == -1)
+	{
+		swapchain_extent = { width, height };
+		if (swapchain_extent.width < surface_cap.minImageExtent.width)
+			swapchain_extent.width = surface_cap.maxImageExtent.width;
+
+		if (swapchain_extent.height < surface_cap.minImageExtent.height)
+			swapchain_extent.height = surface_cap.minImageExtent.height;
+
+		if (swapchain_extent.width > surface_cap.maxImageExtent.width)
+			swapchain_extent.width = surface_cap.maxImageExtent.width;
+
+		if (swapchain_extent.height > surface_cap.maxImageExtent.height)
+			swapchain_extent.height = surface_cap.maxImageExtent.height;
+	}
+	else {
+		swapchain_extent.width = surface_cap.currentExtent.width;
+		swapchain_extent.height = surface_cap.currentExtent.height;
+	}
+
+
+	//Create the swapchain
+	VkSwapchainKHR swap_chain;
+	{
+		VkSwapchainCreateInfoKHR swapChain_create_info;
+		swapChain_create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+		swapChain_create_info.pNext = NULL;
+
+		swapChain_create_info.oldSwapchain = swapChain;
+		swapChain_create_info.flags = 0;
+		swapChain_create_info.imageArrayLayers = 1;
+		swapChain_create_info.presentMode = present_mode;
+		swapChain_create_info.surface = surface;
+		swapChain_create_info.imageExtent = swapchain_extent;
+		swapChain_create_info.imageFormat = color_fmt;
+		swapChain_create_info.imageColorSpace = color_space;
+		swapChain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		swapChain_create_info.clipped = VK_TRUE;
+		swapChain_create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+		swapChain_create_info.queueFamilyIndexCount = 0;
+		swapChain_create_info.pQueueFamilyIndices = NULL;
+
+		swapChain_create_info.preTransform = surface_cap.currentTransform;
+		if (surface_cap.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
+			swapChain_create_info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+
+		swapChain_create_info.minImageCount = surface_cap.minImageCount + 1;
+		if (swapChain_create_info.minImageCount < 3)
+			swapChain_create_info.minImageCount = 3;
+
+		if (swapChain_create_info.minImageCount > surface_cap.maxImageCount)
+			swapChain_create_info.minImageCount = surface_cap.maxImageCount;
+
+		swapChain_create_info.imageUsage = 0;
+
+		if (surface_cap.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+			swapChain_create_info.imageUsage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+		if (surface_cap.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+			swapChain_create_info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+
+
+		err = vkCreateSwapchainKHR(device, &swapChain_create_info, NULL, &swap_chain);
+		HandleError(err);
+	}
+
+	if (swapChain != VK_NULL_HANDLE)
+	{
+		vkDestroySwapchainKHR(device, swapChain, NULL);
+	}
+	swapChain = swap_chain;
+}
+
+void GraphicsContext::SwapBuffers(void)
+{
+	if (!initialized)return;
+
+	uint32_t image_index = 0;
+	
+	VkPresentInfoKHR present_info;
+	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	present_info.pNext = NULL;
+	present_info.pImageIndices = &image_index;
+	present_info.swapchainCount = 1;
+	present_info.pSwapchains = &swapChain;
+	present_info.waitSemaphoreCount = 0;
+	present_info.pWaitSemaphores = &rendering_done_semaphore->semaphore;
+
+	vkQueuePresentKHR(presentQueue->queue, &present_info);
+
+
+	//Create a new semaphore
+	present_img_ready_semaphore->Reset();
+	if (!present_img_ready_semaphore->IsReady()) {
+		fprintf(stderr, "Failed to create a semaphore for presentation.\n");
+		abort();
+	}
+
+	VkResult err = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, present_img_ready_semaphore->semaphore, VK_NULL_HANDLE, &image_index);
+	
+	switch (err)
+	{
+	case VK_SUCCESS:
+	case VK_SUBOPTIMAL_KHR:
+		break;
+	case VK_ERROR_OUT_OF_DATE_KHR:
+		InitializeSwapChain(960, 540);
+		break;
+	case VK_ERROR_INITIALIZATION_FAILED:
+		fprintf(stderr, "Failed to retrieve next frame!\n");
+		abort();
+		break;
+	default:
+		fprintf(stderr, "Error %d\n", err);
+		break;
+	}
+
+
+
+
 }
